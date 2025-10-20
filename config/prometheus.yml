@@ -2,3 +2,5 @@ scrape_configs:
   - job_name: sentinel
     static_configs:
       - targets: ['localhost:8000']
+rule_files:
+  - /etc/prometheus/prometheus_rules.yml

@@ -1,0 +1,16 @@
+groups:
+  - name: anomaly_detection
+    rules:
+      - record: network_packets_avg_5m
+        expr: avg_over_time(network_packets[5m])
+      - record: network_packets_stddev_5m
+        expr: stddev_over_time(network_packets[5m])
+      - record: suspicious_events_zscore
+        expr: (suspicious_events - avg_over_time(suspicious_events[1h])) / stddev_over_time(suspicious_events[1h])
+      - alert: HighAnomalyScore
+        expr: suspicious_events_zscore > 3  # 3-sigma rule for anomalies
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High anomaly score detected ({{ $value }})"

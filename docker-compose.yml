@@ -8,6 +8,7 @@ services:
     image: prom/prometheus
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/prometheus_rules.yml:/etc/prometheus/prometheus_rules.yml
     ports:
       - "9090:9090"
   grafana:
