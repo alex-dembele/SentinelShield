@@ -6,8 +6,10 @@ import smtplib
 from email.mime.text import MIMEText
 import yaml
 import requests
-import datetime
 from metrics import start_metrics_server, packet_counter, suspicious_counter
+from scapy.layers.http import HTTPRequest, HTTPResponse
+import datetime
+import multiprocessing as mp
 
 # Load configuration
 with open('../config/config.yaml', 'r') as f:
@@ -66,7 +68,7 @@ def packet_callback(packet):
             send_slack_alert("Possible DDoS detected!")
             send_telegram_alert("Possible DDoS detected!")
 
-# Protocol anomaly: HTTP on non-standard port (not 80/443)
+    # Protocol anomaly: HTTP on non-standard port (not 80/443)
     if TCP in packet and HTTPRequest in packet:
         dport = packet[TCP].dport
         if dport not in [80, 443]:
@@ -125,11 +127,39 @@ def send_telegram_alert(message):
     requests.get(url)
     print("Telegram alert sent!")
 
+def process_packet(packet):
+    packet_callback(packet)  # Appel à la fonction existante
+
 def main():
     start_metrics_server()  # Start Prometheus metrics server
-    print("Starting network traffic monitoring with anomaly detection...")
+    print("Starting optimized network traffic monitoring with anomaly detection...")
     monitor_system_connections()
-    sniff(prn=packet_callback, store=0, timeout=60)  # Run for 60 seconds for test
+    
+    queue = mp.Queue()
+    pool = mp.Pool(processes=4)  # 4 workers for parallel processing
+    
+    def enqueue_packet(pkt):
+        queue.put(pkt)
+    
+    def worker():
+        while True:
+            pkt = queue.get()
+            if pkt is None:
+                break
+            process_packet(pkt)
+    
+# Launch the workers
+    for _ in range(4):
+        mp.Process(target=worker).start()
+    
+    # Capture and enqueue
+    sniff(prn=enqueue_packet, store=0, timeout=60)  # Run for 60 seconds for test
+    
+    # Stop workers
+    for _ in range(4):
+        queue.put(None)
+    pool.close()
+    pool.join()
 
 if __name__ == "__main__":
     main()

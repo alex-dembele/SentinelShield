@@ -3,3 +3,4 @@ psutil
 smtplib
 prometheus_client
 requests
+multiprocessing
