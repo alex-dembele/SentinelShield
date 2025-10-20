@@ -6,6 +6,7 @@ import smtplib
 from email.mime.text import MIMEText
 import yaml
 import requests
+import datetime
 from metrics import start_metrics_server, packet_counter, suspicious_counter
 
 # Load configuration
@@ -64,6 +65,28 @@ def packet_callback(packet):
             send_alert("Possible DDoS detected!")
             send_slack_alert("Possible DDoS detected!")
             send_telegram_alert("Possible DDoS detected!")
+
+# Anomalie protocolaire: HTTP sur port non standard (pas 80/443)
+    if TCP in packet and HTTPRequest in packet:
+        dport = packet[TCP].dport
+        if dport not in [80, 443]:
+            print(f"Anomalous HTTP on non-standard port {dport} from {src}")
+            suspicious_counter.inc()
+            send_alert(f"Anomalous HTTP on port {dport} from {src}")
+
+    # Anomalie temporelle: Trafic élevé hors heures (ex. : après 18h ou avant 9h)
+    current_hour = datetime.datetime.now().hour
+    if current_hour < 9 or current_hour > 18:
+        if io_tracker[src]['sent'] > 500000:  # 0.5MB threshold hors heures
+            print(f"Out-of-hours high traffic from {src}")
+            suspicious_counter.inc()
+            send_alert(f"Out-of-hours anomaly from {src}")
+
+    # Anomalie comportementale: Payload suspect (ex. : long payload UDP)
+    if UDP in packet and len(packet[UDP].payload) > 1024:
+        print(f"Suspicious large UDP payload from {src}")
+        suspicious_counter.inc()
+        send_alert(f"Large UDP payload anomaly from {src}")
 
 def monitor_system_connections():
     connections = psutil.net_connections()
