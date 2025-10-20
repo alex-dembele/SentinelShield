@@ -5,6 +5,7 @@ import psutil
 import smtplib
 from email.mime.text import MIMEText
 import yaml
+from metrics import start_metrics_server, packet_counter, suspicious_counter
 
 with open('../config/config.yaml', 'r') as f:
     config = yaml.safe_load(f)
@@ -12,6 +13,7 @@ with open('../config/config.yaml', 'r') as f:
 suspicious_ips = defaultdict(list)  # Track ports scanned per IP
 
 def packet_callback(packet):
+    packet_counter.inc()
     if IP in packet and TCP in packet:
         src = packet[IP].src
         dst = packet[IP].dst
@@ -26,6 +28,7 @@ def packet_callback(packet):
             recent_scans = [p for p in suspicious_ips[src] if time.time() - p[1] < 60]  # Last 60s
             if len(recent_scans) > 10:  # Threshold for suspicion
                 print(f"Suspicious port scan from {src}!")
+                suspicious_counter.inc()
                 send_alert(f"Suspicious port scan from {src}!")
 
     elif IP in packet and UDP in packet:
@@ -36,6 +39,8 @@ def monitor_system_connections():
     suspicious = [conn for conn in connections if conn.status == 'ESTABLISHED' and conn.raddr]  # Remote connections
     if len(suspicious) > 50:  # Arbitrary threshold
         print("Suspicious number of connections detected!")
+        suspicious_counter.inc()
+        send_alert("Suspicious number of connections detected!")
     for conn in suspicious[:5]:  # Log some
         print(f"Connection: {conn.laddr} <-> {conn.raddr}")
 
@@ -53,6 +58,7 @@ def send_alert(message):
     print("Alert sent!")
 
 def main():
+    start_metrics_server()
     print("Starting network traffic monitoring with anomaly detection...")
     monitor_system_connections()
     sniff(prn=packet_callback, store=0, timeout=60)  # Run for 60 seconds for test
