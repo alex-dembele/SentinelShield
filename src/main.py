@@ -66,7 +66,7 @@ def packet_callback(packet):
             send_slack_alert("Possible DDoS detected!")
             send_telegram_alert("Possible DDoS detected!")
 
-# Anomalie protocolaire: HTTP sur port non standard (pas 80/443)
+# Protocol anomaly: HTTP on non-standard port (not 80/443)
     if TCP in packet and HTTPRequest in packet:
         dport = packet[TCP].dport
         if dport not in [80, 443]:
@@ -74,15 +74,15 @@ def packet_callback(packet):
             suspicious_counter.inc()
             send_alert(f"Anomalous HTTP on port {dport} from {src}")
 
-    # Anomalie temporelle: Trafic élevé hors heures (ex. : après 18h ou avant 9h)
+    # Temporal anomaly: High traffic outside of hours (e.g. after 6 p.m. or before 9 a.m.)
     current_hour = datetime.datetime.now().hour
     if current_hour < 9 or current_hour > 18:
-        if io_tracker[src]['sent'] > 500000:  # 0.5MB threshold hors heures
+        if io_tracker[src]['sent'] > 500000:  # 0.5MB threshold outside hours
             print(f"Out-of-hours high traffic from {src}")
             suspicious_counter.inc()
             send_alert(f"Out-of-hours anomaly from {src}")
 
-    # Anomalie comportementale: Payload suspect (ex. : long payload UDP)
+# Behavioral anomaly: Suspicious payload (e.g. long UDP payload)
     if UDP in packet and len(packet[UDP].payload) > 1024:
         print(f"Suspicious large UDP payload from {src}")
         suspicious_counter.inc()
