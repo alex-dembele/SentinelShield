@@ -8,36 +8,62 @@ import yaml
 import requests
 from metrics import start_metrics_server, packet_counter, suspicious_counter
 
-suspicious_ips = defaultdict(list)  # Track ports scanned per IP
-
+# Load configuration
 with open('../config/config.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
+suspicious_ips = defaultdict(list)  # Track ports scanned per IP
+io_tracker = defaultdict(lambda: {'sent': 0, 'recv': 0})  # Track bytes sent/received per IP
+
 def packet_callback(packet):
-    packet_counter.inc()
-    if IP in packet and TCP in packet:
+    packet_counter.inc()  # Increment packet counter for Prometheus
+    
+    if IP in packet:
         src = packet[IP].src
         dst = packet[IP].dst
-        dport = packet[TCP].dport
-        flags = packet[TCP].flags
+        proto = packet[IP].proto
         
-        print(f"Packet: {src} -> {dst}:{dport} (Flags: {flags})")
+        # Update IO tracker
+        io_tracker[src]['sent'] += len(packet)
+        io_tracker[dst]['recv'] += len(packet)
         
-        # Detect port scan: multiple SYN to different ports
-        if flags & 2:  # SYN flag
-            suspicious_ips[src].append((dport, time.time()))
-            recent_scans = [p for p in suspicious_ips[src] if time.time() - p[1] < 60]  # Last 60s
-            if len(recent_scans) > 10:  # Threshold for suspicion
-                print(f"Suspicious port scan from {src}!")
-                suspicious_counter.inc()
-                send_alert(f"Suspicious port scan from {src}!")
-                if 'slack' in config:
+        print(f"Packet: {src} -> {dst} (Proto: {proto})")
+        
+        if TCP in packet:
+            dport = packet[TCP].dport
+            flags = packet[TCP].flags
+            print(f"TCP Port: {packet[TCP].sport} -> {dport} (Flags: {flags})")
+            
+            # Detect port scan: multiple SYN to different ports
+            if flags & 2:  # SYN flag
+                suspicious_ips[src].append((dport, time.time()))
+                recent_scans = [p for p in suspicious_ips[src] if time.time() - p[1] < 60]  # Last 60s
+                if len(recent_scans) > 10:  # Threshold for suspicion
+                    print(f"Suspicious port scan from {src}!")
+                    suspicious_counter.inc()
+                    send_alert(f"Suspicious port scan from {src}!")
                     send_slack_alert(f"Suspicious port scan from {src}!")
-                if 'telegram' in config:
                     send_telegram_alert(f"Suspicious port scan from {src}!")
 
-    elif IP in packet and UDP in packet:
-        print(f"UDP Packet: {packet[IP].src} -> {packet[IP].dst}:{packet[UDP].dport}")
+        elif UDP in packet:
+            print(f"UDP Port: {packet[UDP].sport} -> {packet[UDP].dport}")
+        
+        # Detect exfiltration (high sent bytes)
+        if io_tracker[src]['sent'] > 1000000:  # 1MB threshold
+            print(f"Possible exfiltration from {src}")
+            suspicious_counter.inc()
+            send_alert(f"Possible exfiltration from {src}")
+            send_slack_alert(f"Possible exfiltration from {src}")
+            send_telegram_alert(f"Possible exfiltration from {src}")
+        
+        # Detect DDoS (high global received bytes)
+        total_recv = sum(io['recv'] for io in io_tracker.values())
+        if total_recv > 10000000:  # 10MB threshold
+            print("Possible DDoS detected!")
+            suspicious_counter.inc()
+            send_alert("Possible DDoS detected!")
+            send_slack_alert("Possible DDoS detected!")
+            send_telegram_alert("Possible DDoS detected!")
 
 def monitor_system_connections():
     connections = psutil.net_connections()
@@ -46,10 +72,8 @@ def monitor_system_connections():
         print("Suspicious number of connections detected!")
         suspicious_counter.inc()
         send_alert("Suspicious number of connections detected!")
-        if 'slack' in config:
-            send_slack_alert("Suspicious number of connections detected!")
-        if 'telegram' in config:
-            send_telegram_alert("Suspicious number of connections detected!")
+        send_slack_alert("Suspicious number of connections detected!")
+        send_telegram_alert("Suspicious number of connections detected!")
     for conn in suspicious[:5]:  # Log some
         print(f"Connection: {conn.laddr} <-> {conn.raddr}")
 
@@ -79,8 +103,8 @@ def send_telegram_alert(message):
     print("Telegram alert sent!")
 
 def main():
+    start_metrics_server()  # Start Prometheus metrics server
     print("Starting network traffic monitoring with anomaly detection...")
-    start_metrics_server()
     monitor_system_connections()
     sniff(prn=packet_callback, store=0, timeout=60)  # Run for 60 seconds for test
 
