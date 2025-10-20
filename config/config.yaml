@@ -5,3 +5,10 @@ alert:
     receiver: alert@example.com
     smtp_server: smtp.gmail.com
     smtp_port: 587
+
+slack:
+  webhook: https://hooks.slack.com/services/your/webhook
+  
+telegram:
+  token: your_token
+  chat_id: your_chat_id

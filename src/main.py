@@ -5,12 +5,13 @@ import psutil
 import smtplib
 from email.mime.text import MIMEText
 import yaml
+import requests
 from metrics import start_metrics_server, packet_counter, suspicious_counter
+
+suspicious_ips = defaultdict(list)  # Track ports scanned per IP
 
 with open('../config/config.yaml', 'r') as f:
     config = yaml.safe_load(f)
-
-suspicious_ips = defaultdict(list)  # Track ports scanned per IP
 
 def packet_callback(packet):
     packet_counter.inc()
@@ -30,6 +31,10 @@ def packet_callback(packet):
                 print(f"Suspicious port scan from {src}!")
                 suspicious_counter.inc()
                 send_alert(f"Suspicious port scan from {src}!")
+                if 'slack' in config:
+                    send_slack_alert(f"Suspicious port scan from {src}!")
+                if 'telegram' in config:
+                    send_telegram_alert(f"Suspicious port scan from {src}!")
 
     elif IP in packet and UDP in packet:
         print(f"UDP Packet: {packet[IP].src} -> {packet[IP].dst}:{packet[UDP].dport}")
@@ -41,6 +46,10 @@ def monitor_system_connections():
         print("Suspicious number of connections detected!")
         suspicious_counter.inc()
         send_alert("Suspicious number of connections detected!")
+        if 'slack' in config:
+            send_slack_alert("Suspicious number of connections detected!")
+        if 'telegram' in config:
+            send_telegram_alert("Suspicious number of connections detected!")
     for conn in suspicious[:5]:  # Log some
         print(f"Connection: {conn.laddr} <-> {conn.raddr}")
 
@@ -57,9 +66,21 @@ def send_alert(message):
     server.quit()
     print("Alert sent!")
 
+def send_slack_alert(message):
+    webhook = config['slack']['webhook']
+    requests.post(webhook, json={"text": message})
+    print("Slack alert sent!")
+
+def send_telegram_alert(message):
+    token = config['telegram']['token']
+    chat_id = config['telegram']['chat_id']
+    url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}"
+    requests.get(url)
+    print("Telegram alert sent!")
+
 def main():
-    start_metrics_server()
     print("Starting network traffic monitoring with anomaly detection...")
+    start_metrics_server()
     monitor_system_connections()
     sniff(prn=packet_callback, store=0, timeout=60)  # Run for 60 seconds for test
 

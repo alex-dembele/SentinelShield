@@ -24,7 +24,8 @@ Monitor internal network traffic and detect suspicious behavior (scanning, exfil
 4. Launch the application: `python src/main.py` (run with sudo for Scapy if necessary)
 
 ## Prometheus and Grafana Setup
-1. Install Prometheus and Grafana locally (via their official websites or packages). 2. Configure Prometheus with the `config/prometheus.yml` file to scrape application metrics from `http://localhost:8000`.
+1. Install Prometheus and Grafana locally (via their official websites or packages). 
+2. Configure Prometheus with the `config/prometheus.yml` file to scrape application metrics from `http://localhost:8000`.
 3. Launch Prometheus: navigate to `http://localhost:9090` to verify.
 4. Launch Grafana: navigate to `http://localhost:3000`, add Prometheus as a data source (URL: `http://localhost:9090`).
 5. Import the dashboard from `docs/grafana_dashboard.json` into Grafana to visualize metrics (captured packets, suspicious events).

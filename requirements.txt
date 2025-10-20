@@ -2,3 +2,4 @@ scapy
 psutil
 smtplib
 prometheus_client
+requests
