@@ -2,12 +2,13 @@ version: '3'
 services:
   sentinel:
     build: .
-    network_mode: host  # Pour sniffer le réseau hôte
-    privileged: true  # Pour Scapy
+    network_mode: host  # To sniff the host network
+    privileged: true  # For Scapy
   prometheus:
     image: prom/prometheus
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/prometheus_rules.yml:/etc/prometheus/prometheus_rules.yml
     ports:
       - "9090:9090"
   grafana:
@@ -16,3 +17,10 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
+  web:
+    build: .
+    command: python src/app.py
+    ports:
+      - "5000:5000"
+    depends_on:
+      - prometheus

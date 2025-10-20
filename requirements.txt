@@ -3,3 +3,6 @@ psutil
 smtplib
 prometheus_client
 requests
+multiprocessing
+python-dotenv
+flask
