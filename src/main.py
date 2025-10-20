@@ -2,6 +2,12 @@ from scapy.all import sniff, IP, TCP, UDP
 from collections import defaultdict
 import time
 import psutil
+import smtplib
+from email.mime.text import MIMEText
+import yaml
+
+with open('../config/config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
 
 suspicious_ips = defaultdict(list)  # Track ports scanned per IP
 
@@ -20,6 +26,7 @@ def packet_callback(packet):
             recent_scans = [p for p in suspicious_ips[src] if time.time() - p[1] < 60]  # Last 60s
             if len(recent_scans) > 10:  # Threshold for suspicion
                 print(f"Suspicious port scan from {src}!")
+                send_alert(f"Suspicious port scan from {src}!")
 
     elif IP in packet and UDP in packet:
         print(f"UDP Packet: {packet[IP].src} -> {packet[IP].dst}:{packet[UDP].dport}")
@@ -31,6 +38,19 @@ def monitor_system_connections():
         print("Suspicious number of connections detected!")
     for conn in suspicious[:5]:  # Log some
         print(f"Connection: {conn.laddr} <-> {conn.raddr}")
+
+def send_alert(message):
+    msg = MIMEText(message)
+    msg['Subject'] = 'SentinelShield Alert'
+    msg['From'] = config['alert']['email']['sender']
+    msg['To'] = config['alert']['email']['receiver']
+    
+    server = smtplib.SMTP(config['alert']['email']['smtp_server'], config['alert']['email']['smtp_port'])
+    server.starttls()
+    server.login(config['alert']['email']['sender'], config['alert']['email']['password'])
+    server.sendmail(config['alert']['email']['sender'], config['alert']['email']['receiver'], msg.as_string())
+    server.quit()
+    print("Alert sent!")
 
 def main():
     print("Starting network traffic monitoring with anomaly detection...")

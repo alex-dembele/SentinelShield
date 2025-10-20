@@ -1,0 +1,7 @@
+alert:
+  email:
+    sender: your.email@example.com
+    password: yourpassword
+    receiver: alert@example.com
+    smtp_server: smtp.gmail.com
+    smtp_port: 587
