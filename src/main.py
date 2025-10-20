@@ -5,32 +5,35 @@ import time
 import psutil
 import smtplib
 from email.mime.text import MIMEText
-import yaml
 import requests
-from metrics import start_metrics_server, packet_counter, suspicious_counter
-import datetime
+from metrics import start_metrics_server, packet_counter, suspicious_counter, anomaly_score
 import multiprocessing as mp
 import logging
 from logging.handlers import RotatingFileHandler
 import functools
-import time
-import sys
+import datetime
+import os
+from dotenv import load_dotenv
 
-# Setup logging
+load_dotenv()
+
+config = {
+    'alert': {
+        'email': {
+            'sender': os.getenv('EMAIL_SENDER'),
+            'password': os.getenv('EMAIL_PASSWORD'),
+            'receiver': os.getenv('EMAIL_RECEIVER'),
+            'smtp_server': os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
+            'smtp_port': int(os.getenv('SMTP_PORT', 587))
+        },
+        'slack': {'webhook': os.getenv('SLACK_WEBHOOK')},
+        'telegram': {'token': os.getenv('TELEGRAM_TOKEN'), 'chat_id': os.getenv('TELEGRAM_CHAT_ID')}
+    }
+}
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 handler = RotatingFileHandler('sentinelshield.log', maxBytes=1000000, backupCount=5)
 logging.getLogger().addHandler(handler)
-
-# Load configuration
-try:
-    with open('../config/config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
-except Exception as e:
-    logging.critical(f"Failed to load config: {e}")
-    sys.exit(1)
-
-suspicious_ips = defaultdict(list)  # Track ports scanned per IP
-io_tracker = defaultdict(lambda: {'sent': 0, 'recv': 0})  # Track bytes sent/received per IP
 
 def retry(max_attempts=3, delay=1):
     def decorator(func):
@@ -48,6 +51,96 @@ def retry(max_attempts=3, delay=1):
         return wrapper
     return decorator
 
+suspicious_ips = defaultdict(list)  # Track ports scanned per IP
+io_tracker = defaultdict(lambda: {'sent': 0, 'recv': 0})  # Track bytes sent/received per IP
+
+def packet_callback(packet):
+    packet_counter.inc()  # Increment packet counter for Prometheus
+    
+    if IP in packet:
+        src = packet[IP].src
+        dst = packet[IP].dst
+        proto = packet[IP].proto
+        
+        # Update IO tracker
+        io_tracker[src]['sent'] += len(packet)
+        io_tracker[dst]['recv'] += len(packet)
+        
+        print(f"Packet: {src} -> {dst} (Proto: {proto})")
+        
+        if TCP in packet:
+            dport = packet[TCP].dport
+            flags = packet[TCP].flags
+            print(f"TCP Port: {packet[TCP].sport} -> {dport} (Flags: {flags})")
+            
+            # Detect port scan: multiple SYN to different ports
+            if flags & 2:  # SYN flag
+                suspicious_ips[src].append((dport, time.time()))
+                recent_scans = [p for p in suspicious_ips[src] if time.time() - p[1] < 60]  # Last 60s
+                if len(recent_scans) > 10:  # Threshold for suspicion
+                    print(f"Suspicious port scan from {src}!")
+                    suspicious_counter.inc()
+                    send_alert(f"Suspicious port scan from {src}!")
+                    send_slack_alert(f"Suspicious port scan from {src}!")
+                    send_telegram_alert(f"Suspicious port scan from {src}!")
+
+        elif UDP in packet:
+            print(f"UDP Port: {packet[UDP].sport} -> {packet[UDP].dport}")
+        
+        # Detect exfiltration (high sent bytes)
+        if io_tracker[src]['sent'] > 1000000:  # 1MB threshold
+            print(f"Possible exfiltration from {src}")
+            suspicious_counter.inc()
+            send_alert(f"Possible exfiltration from {src}")
+            send_slack_alert(f"Possible exfiltration from {src}")
+            send_telegram_alert(f"Possible exfiltration from {src}")
+        
+        # Detect DDoS (high global received bytes)
+        total_recv = sum(io['recv'] for io in io_tracker.values())
+        if total_recv > 10000000:  # 10MB threshold
+            print("Possible DDoS detected!")
+            suspicious_counter.inc()
+            send_alert("Possible DDoS detected!")
+            send_slack_alert("Possible DDoS detected!")
+            send_telegram_alert("Possible DDoS detected!")
+
+        # Anomalie protocolaire: HTTP sur port non standard (pas 80/443)
+        if TCP in packet and HTTPRequest in packet:
+            dport = packet[TCP].dport
+            if dport not in [80, 443]:
+                print(f"Anomalous HTTP on non-standard port {dport} from {src}")
+                suspicious_counter.inc()
+                send_alert(f"Anomalous HTTP on port {dport} from {src}")
+
+        # Anomalie temporelle: Trafic élevé hors heures (ex. : après 18h ou avant 9h)
+        current_hour = datetime.datetime.now().hour
+        if current_hour < 9 or current_hour > 18:
+            if io_tracker[src]['sent'] > 500000:  # 0.5MB threshold hors heures
+                print(f"Out-of-hours high traffic from {src}")
+                suspicious_counter.inc()
+                send_alert(f"Out-of-hours anomaly from {src}")
+
+        # Anomalie comportementale: Payload suspect (ex. : long payload UDP)
+        if UDP in packet and len(packet[UDP].payload) > 1024:
+            print(f"Suspicious large UDP payload from {src}")
+            suspicious_counter.inc()
+            send_alert(f"Large UDP payload anomaly from {src}")
+
+def process_packet(packet):
+    packet_callback(packet)  # Appel à la fonction existante
+
+def monitor_system_connections():
+    connections = psutil.net_connections()
+    suspicious = [conn for conn in connections if conn.status == 'ESTABLISHED' and conn.raddr]  # Remote connections
+    if len(suspicious) > 50:  # Arbitrary threshold
+        print("Suspicious number of connections detected!")
+        suspicious_counter.inc()
+        send_alert("Suspicious number of connections detected!")
+        send_slack_alert("Suspicious number of connections detected!")
+        send_telegram_alert("Suspicious number of connections detected!")
+    for conn in suspicious[:5]:  # Log some
+        print(f"Connection: {conn.laddr} <-> {conn.raddr}")
+
 @retry()
 def send_alert(message):
     msg = MIMEText(message)
@@ -61,129 +154,24 @@ def send_alert(message):
     server.sendmail(config['alert']['email']['sender'], config['alert']['email']['receiver'], msg.as_string())
     server.quit()
     print("Alert sent!")
-    logging.info("Alert sent via email")
 
 @retry()
 def send_slack_alert(message):
     webhook = config['slack']['webhook']
-    response = requests.post(webhook, json={"text": message})
-    response.raise_for_status()
+    requests.post(webhook, json={"text": message})
     print("Slack alert sent!")
-    logging.info("Alert sent via Slack")
 
 @retry()
 def send_telegram_alert(message):
     token = config['telegram']['token']
     chat_id = config['telegram']['chat_id']
     url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}"
-    response = requests.get(url)
-    response.raise_for_status()
+    requests.get(url)
     print("Telegram alert sent!")
-    logging.info("Alert sent via Telegram")
-
-def packet_callback(packet):
-    try:
-        packet_counter.inc()  # Increment packet counter for Prometheus
-        
-        if IP in packet:
-            src = packet[IP].src
-            dst = packet[IP].dst
-            proto = packet[IP].proto
-            
-            # Update IO tracker
-            io_tracker[src]['sent'] += len(packet)
-            io_tracker[dst]['recv'] += len(packet)
-            
-            logging.info(f"Packet: {src} -> {dst} (Proto: {proto})")
-            
-            if TCP in packet:
-                dport = packet[TCP].dport
-                flags = packet[TCP].flags
-                logging.info(f"TCP Port: {packet[TCP].sport} -> {dport} (Flags: {flags})")
-                
-                # Detect port scan: multiple SYN to different ports
-                if flags & 2:  # SYN flag
-                    suspicious_ips[src].append((dport, time.time()))
-                    recent_scans = [p for p in suspicious_ips[src] if time.time() - p[1] < 60]  # Last 60s
-                    if len(recent_scans) > 10:  # Threshold for suspicion
-                        logging.warning(f"Suspicious port scan from {src}!")
-                        suspicious_counter.inc()
-                        send_alert(f"Suspicious port scan from {src}!")
-                        send_slack_alert(f"Suspicious port scan from {src}!")
-                        send_telegram_alert(f"Suspicious port scan from {src}!")
-
-            elif UDP in packet:
-                logging.info(f"UDP Port: {packet[UDP].sport} -> {packet[UDP].dport}")
-            
-            # Detect exfiltration (high sent bytes)
-            if io_tracker[src]['sent'] > 1000000:  # 1MB threshold
-                logging.warning(f"Possible exfiltration from {src}")
-                suspicious_counter.inc()
-                send_alert(f"Possible exfiltration from {src}")
-                send_slack_alert(f"Possible exfiltration from {src}")
-                send_telegram_alert(f"Possible exfiltration from {src}")
-            
-            # Detect DDoS (high global received bytes)
-            total_recv = sum(io['recv'] for io in io_tracker.values())
-            if total_recv > 10000000:  # 10MB threshold
-                logging.warning("Possible DDoS detected!")
-                suspicious_counter.inc()
-                send_alert("Possible DDoS detected!")
-                send_slack_alert("Possible DDoS detected!")
-                send_telegram_alert("Possible DDoS detected!")
-
-            # Anomalie protocolaire: HTTP sur port non standard (pas 80/443)
-            if TCP in packet and HTTPRequest in packet:
-                dport = packet[TCP].dport
-                if dport not in [80, 443]:
-                    logging.warning(f"Anomalous HTTP on non-standard port {dport} from {src}")
-                    suspicious_counter.inc()
-                    send_alert(f"Anomalous HTTP on port {dport} from {src}")
-                    send_slack_alert(f"Anomalous HTTP on port {dport} from {src}")
-                    send_telegram_alert(f"Anomalous HTTP on port {dport} from {src}")
-
-            # Anomalie temporelle: Trafic élevé hors heures (ex. : après 18h ou avant 9h)
-            current_hour = datetime.datetime.now().hour
-            if current_hour < 9 or current_hour > 18:
-                if io_tracker[src]['sent'] > 500000:  # 0.5MB threshold hors heures
-                    logging.warning(f"Out-of-hours high traffic from {src}")
-                    suspicious_counter.inc()
-                    send_alert(f"Out-of-hours anomaly from {src}")
-                    send_slack_alert(f"Out-of-hours anomaly from {src}")
-                    send_telegram_alert(f"Out-of-hours anomaly from {src}")
-
-            # Anomalie comportementale: Payload suspect (ex. : long payload UDP)
-            if UDP in packet and len(packet[UDP].payload) > 1024:
-                logging.warning(f"Suspicious large UDP payload from {src}")
-                suspicious_counter.inc()
-                send_alert(f"Large UDP payload anomaly from {src}")
-                send_slack_alert(f"Large UDP payload anomaly from {src}")
-                send_telegram_alert(f"Large UDP payload anomaly from {src}")
-
-    except Exception as e:
-        logging.error(f"Error processing packet: {e}")
-
-def monitor_system_connections():
-    try:
-        connections = psutil.net_connections()
-        suspicious = [conn for conn in connections if conn.status == 'ESTABLISHED' and conn.raddr]  # Remote connections
-        if len(suspicious) > 50:  # Arbitrary threshold
-            logging.warning("Suspicious number of connections detected!")
-            suspicious_counter.inc()
-            send_alert("Suspicious number of connections detected!")
-            send_slack_alert("Suspicious number of connections detected!")
-            send_telegram_alert("Suspicious number of connections detected!")
-        for conn in suspicious[:5]:  # Log some
-            logging.info(f"Connection: {conn.laddr} <-> {conn.raddr}")
-    except Exception as e:
-        logging.error(f"Error monitoring system connections: {e}")
-
-def process_packet(packet):
-    packet_callback(packet)  # Appel à la fonction existante
 
 def main():
     start_metrics_server()  # Start Prometheus metrics server
-    logging.info("Starting network traffic monitoring with anomaly detection...")
+    print("Starting network traffic monitoring with anomaly detection...")
     monitor_system_connections()
     
     queue = mp.Queue()
@@ -205,7 +193,7 @@ def main():
     
     # Capture et enqueue
     try:
-        sniff(prn=enqueue_packet, store=0, timeout=60)  # Run for 60 seconds for test
+        sniff(prn=enqueue_packet, store=0, timeout=60)
     except Exception as e:
         logging.error(f"Sniff error: {e}")
     
